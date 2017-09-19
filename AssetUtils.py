@@ -1,9 +1,10 @@
-import datetime
+import os
+import xlrd
 import requests
 import pathlib
 import pandas as pd
-import os
-import xlrd
+import numpy as np
+from datetime import datetime
 from bs4 import BeautifulSoup
 
 class AssetDatabase:
@@ -19,6 +20,7 @@ class AssetDatabase:
         self._asset_historicals = {}
 
     def retrieve_database(self):
+        print('Retrieving database...')
         web_table_columns = { 'etf': { 'name': 0, 'exchange': 1, 'ticker': 2 },
                               'pif': { 'name': 0 } }
         web_page_token    = { 'etf': '/?p=',
@@ -29,7 +31,6 @@ class AssetDatabase:
             page = 0
             while True:
                 web_page = self.domains[asset_type] + web_page_token[asset_type] + str(page)
-                # print('Parsing ' + web_page)
                 r = requests.get(web_page)
                 soup = BeautifulSoup(r.content, 'html.parser')
                 asset_table = soup.find('table', id = 'funds_table')
@@ -57,6 +58,7 @@ class AssetDatabase:
                         self._db = self._db.append(pd.Series(data, index = self._db.columns), ignore_index = True)
 
                 page += 1
+        print('Success!')
 
     def save_database(self, name):
         self._db.to_csv('%s.csv' % name, index = False, encoding = 'utf-8')
@@ -71,6 +73,9 @@ class AssetDatabase:
     def find_in_database(self, token):
         return self._db[self._db['name'].str.contains(token, case = False) | (self._db['ticker'] == token)]
 
+    def is_in_database(self, token):
+        return any((self._db['name'] == token) | (self._db['ticker'] == token).tolist())
+
     def get_href(self, ticker_or_name):
         asset_type, href = self.get_info(ticker_or_name)
         if asset_type == None:
@@ -80,19 +85,18 @@ class AssetDatabase:
 
     def get_info(self, ticker_or_name):
         result = self._db[(self._db['ticker'] == ticker_or_name) | (self._db['name'] == ticker_or_name)]
-        if len(result) == 0:
-            return None, None
-        else:
+        try:
             return result.iloc[0]['type'], result.iloc[0]['href']
+        except IndexError:
+            return None, None
 
     def update_asset_historical(self, ticker_or_name):
         asset_type, asset_id = self.get_info(ticker_or_name)
         if asset_type != None:
-            today_t = datetime.datetime.now()
-            today = today_t.strftime(self.time_format)
+            today = datetime.now()
             key = asset_type + str(asset_id)
             if key not in self._asset_historicals:
-                start_date = '01.01.1970'
+                start_date = datetime(1970, 1, 1)
                 print('Downloading historical data for ' + ticker_or_name + '...')
                 hist_df = self._retrieve_asset_historical(ticker_or_name, start_date, today)
                 if type(hist_df) != None:
@@ -100,7 +104,7 @@ class AssetDatabase:
                     print('Success!')
             else:
                 start_date = self._asset_historicals[key].iloc[0]['date']
-                print('Updating historical data from ' + start_date + ' for ' + ticker_or_name + '...')
+                print('Updating historical data (last was %s) for %s...' % (start_date.strftime(self.time_format), ticker_or_name))
                 hist_df = self._retrieve_asset_historical(ticker_or_name, start_date, today)[:-1]
                 if type(hist_df) != None:
                     if len(hist_df) == 0:
@@ -109,23 +113,32 @@ class AssetDatabase:
                         self._asset_historicals[key] = pd.concat([hist_df, self._asset_historicals[key]], ignore_index = True)
                         print('Success!')
         else:
-            print('Asset ' + ticker_or_name + ' not found')
+            print('Asset %s not found' % ticker_or_name)
 
-    def get_asset_historical(self, ticker_or_name):
+    def get_asset_historical(self, ticker_or_name, date = None):
         asset_type, asset_id = self.get_info(ticker_or_name)
         if asset_type != None:
             key = asset_type + str(asset_id)
             if key not in self._asset_historicals:
                 self.update_asset_historical(ticker_or_name)
-            return self._asset_historicals[key]
+            if date == None:
+                return self._asset_historicals[key]
+            else:
+                prices = self._asset_historicals[key][self._asset_historicals[key]['date'] <= date]
+                try:
+                    return prices.iloc[0]
+                except IndexError:
+                    print('No historical for %s at %s' % (ticker_or_name, date))
+                    return None
+
         else:
-            print('Asset ' + ticker_or_name + ' not found')
+            print('Asset %s not found' % ticker_or_name)
             return None
 
     def _retrieve_asset_historical(self, ticker_or_name, start_date, end_date):
         hist_columns = ['date', 'price']
-        start_date_t = datetime.datetime.strptime(start_date, self.time_format)
-        end_date_t = datetime.datetime.strptime(end_date, self.time_format)
+        start_date_str = start_date.strftime(self.time_format)
+        end_date_str = end_date.strftime(self.time_format)
 
         stats_df = pd.DataFrame(columns = hist_columns)
         asset_type, asset_id = self.get_info(ticker_or_name)
@@ -137,8 +150,8 @@ class AssetDatabase:
             page = 0
             while True:
                 href = self.get_href(ticker_or_name)
-                params = { 'dateStart': start_date,
-                           'dateEnd': end_date,
+                params = { 'dateStart': start_date_str,
+                           'dateEnd': end_date_str,
                            'p': page }
                 r = requests.get(href + stats_page_href, params = params)
                 soup = BeautifulSoup(r.content, 'html.parser')
@@ -166,12 +179,12 @@ class AssetDatabase:
             params = { 'f2[0]':  asset_id,
                        'export' : '2',
                        'export_type' : 'xls',
-                       'start_day' : start_date_t.day,
-                       'start_month' : start_date_t.month,
-                       'start_year' : start_date_t.year,
-                       'finish_day' : end_date_t.day,
-                       'finish_month' : end_date_t.month,
-                       'finish_year' : end_date_t.year }
+                       'start_day' : start_date.day,
+                       'start_month' : start_date.month,
+                       'start_year' : start_date.year,
+                       'finish_day' : end_date.day,
+                       'finish_month' : end_date.month,
+                       'finish_year' : end_date.year }
             r = requests.get(export_page_href, params = params, stream = True)
             if (r.status_code == 200) & (len(r.text) != 0):
                 with open('_temp.xls', 'wb') as f:
@@ -181,10 +194,8 @@ class AssetDatabase:
                 print('Download error')
                 return None
             wb = xlrd.open_workbook('_temp.xls', logfile = open(os.devnull, 'w'))
-            stats_df = pd.read_excel(wb, engine = 'xlrd', skiprows = 3, header = None, names = ['date', 'price', 'nav'])
+            stats_df = pd.read_excel(wb, engine = 'xlrd', skiprows = 3, header = None, names = ['date', 'price'], parse_cols = 2)
             os.remove('_temp.xls')
-            if len(stats_df) != 0:
-                stats_df.drop('nav', axis = 1, inplace = True)
 
         elif asset_type == None:
             print('No such asset in the database')
@@ -194,6 +205,7 @@ class AssetDatabase:
             print('Unknown error')
             return None
 
+        stats_df['date'] = stats_df['date'].apply(lambda x: datetime.strptime(x, self.time_format))
         return stats_df
 
     def save_asset_historicals(self, folder_name):
@@ -206,8 +218,143 @@ class AssetDatabase:
         path = pathlib.Path(folder_name)
         num = 0
         for fname in path.glob('*.csv'):
-            df = pd.read_csv(fname)
+            df = pd.read_csv(fname, parse_dates = ['date'])
             key = str(fname).split('.')[-2].split('\\')[-1]
             self._asset_historicals[key] = df
             num += 1
         print('%d entries loaded from %s' % (num, folder_name))
+
+class AssetPortfolio:
+
+    # TODO update_position_historical
+    # TODO зачем мне столько классов для позиций?
+
+    class Position:
+        def __init__(self, id, date, price, count, fee):
+            self.id = id
+            self.date = date
+            self.price = price
+            self.count = count
+            self.fee = fee
+
+    class OpenPosition(Position):
+        def __init__(self, id, date, price, count, fee):
+            super().__init__(id, date, price, count, fee)
+
+    class ClosedPosition(Position):
+        def __init__(self, id, date, price, count, fee):
+            super().__init__(id, date, price, count, fee)
+
+    class Fee():
+        def __init__(self, date, fee):
+            self.date = date
+            self.fee = fee
+
+    def __init__(self, database_file = None):
+        self.asset_db = AssetDatabase()
+        self.position_list = []
+        if database_file == None:
+            self.asset_db.retrieve_database()
+        else:
+            self.asset_db.load_database(database_file)
+
+    def buy(self, id, date, price, count, fee):
+        if self.asset_db.is_in_database(id):
+            self.position_list.append(self.OpenPosition(id, np.datetime64(date), price, count, fee))
+            self.position_list.sort(key = lambda x: x.date)
+            #self.position_list.sort(key = lambda x:
+            #                        datetime.strptime(x.date, self.asset_db.time_format))
+        else:
+            print('Asset ' + id + ' not found')
+
+    def sell(self, id, date, price, count, fee):
+        if self.asset_db.is_in_database(id):
+            self.position_list.append(self.ClosedPosition(id, np.datetime64(date), price, count, fee))
+            self.position_list.sort(key = lambda x: x.date)
+            #self.position_list.sort(key = lambda x:
+            #                        datetime.strptime(x.date, self.asset_db.time_format))
+        else:
+            print('Asset ' + id + ' not found')
+
+    def pay_fee(self, date, fee):
+        self.position_list.append(self.Fee(np.datetime64(date), fee))
+        self.position_list.sort(key = lambda x: x.date)
+        #self.position_list.sort(key = lambda x:
+        #                        datetime.strptime(x.date, self.asset_db.time_format))
+
+    def list_positions(self):
+        for i, pos in zip(range(len(self.position_list)), self.position_list):
+            if type(pos) == self.OpenPosition:
+                print('%-3d %s\t %s\t buy\t %.2f\t %.2f\t %.2f' % (i, pos.id, pos.date, pos.price, pos.count, pos.fee))
+            elif type(pos) == self.ClosedPosition:
+                print('%-3d %s\t %s\t sell\t %.2f\t %.2f\t %.2f' % (i, pos.id, pos.date, pos.price, pos.count, pos.fee))
+            elif type(pos) == self.Fee:
+                print('%-3d Fee\t %s\t     \t %.2f' % (i, pos.date,  pos.fee))
+            else:
+                print('Unknown object')
+
+    def delete_position(self, n):
+        if (n < 0) | (n >= len(self.position_list)):
+            print('Incorrect index')
+        else:
+            self.position_list.pop(n)
+
+    def get_money_invested(self):
+        result = 0
+        state = [type(x) == self.OpenPosition for x in self.position_list]
+        index = [i for i, x in enumerate(state) if x]
+        for pos in [self.position_list[i] for i in index]:
+            result += pos.price * pos.count
+        return result
+
+    def get_money_withdrawn(self):
+        result = 0
+        state = [type(x) == self.ClosedPosition for x in self.position_list]
+        index = [i for i, x in enumerate(state) if x]
+        for pos in [self.position_list[i] for i in index]:
+            result += pos.price * pos.count
+        return result
+
+    def get_fee(self):
+        result = 0
+        for pos in self.position_list:
+            result += pos.fee
+        return result
+
+    def get_portfolio_price(self, date):
+        date = np.datetime64(date)
+        price = 0
+        for pos in self.position_list:
+            if type(pos) == self.Fee:
+                continue
+            if pos.date > date:
+                break
+            pos_price = self.asset_db.get_asset_historical(pos.id, date)
+            if type(pos_price) == None:
+                print('Error')
+                return None
+            pos_price = pos_price['price']
+            if type(pos) == self.OpenPosition:
+                price += pos_price * pos.count
+            elif type(pos) == self.ClosedPosition:
+                price -= pos_price * pos.count
+        return price
+
+    def get_portfolio_price_span(self, start_date, end_date):
+        time_format = self.asset_db.time_format
+        date = np.datetime64(start_date)
+        end_date = np.datetime64(end_date)
+        delta = np.timedelta64(1, 'D')
+        price = []
+        while date <= end_date:
+            current_price = self.get_portfolio_price(date)
+            price.append((date, current_price))
+            date += delta
+        return pd.DataFrame(price, columns = ['date', 'price'])
+
+    def get_portfolio_price_today(self):
+        return self.get_portfolio_price(datetime.now())
+
+    def get_profit(self):
+        return self.get_portfolio_price_today() + self.get_money_withdrawn() - \
+               self.get_fee() - self.get_money_invested()
