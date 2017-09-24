@@ -20,6 +20,7 @@ class AssetDatabase:
         self._asset_historicals = {}
 
     def retrieve_database(self):
+        self._db = pd.DataFrame(columns = self.db_columns)
         print('Retrieving database...')
         web_table_columns = { 'etf': { 'name': 0, 'exchange': 1, 'ticker': 2 },
                               'pif': { 'name': 0 } }
@@ -71,7 +72,12 @@ class AssetDatabase:
             self._db = new_db
 
     def find_in_database(self, token):
-        return self._db[self._db['name'].str.contains(token, case = False) | (self._db['ticker'] == token)]
+        mask = np.column_stack([self._db[col].astype(str).str.contains(token, case = False,
+                                                   na = False) for col in self._db.columns])
+        return self._db.iloc[mask.any(axis = 1)]
+
+    def get_entry_from_database(self, token):
+        return self._db[(self._db['name'] == token) | (self._db['ticker'] == token)]
 
     def is_in_database(self, token):
         return any((self._db['name'] == token) | (self._db['ticker'] == token).tolist())
@@ -252,35 +258,52 @@ class AssetPortfolio:
 
     def __init__(self, database_file = None):
         self.asset_db = AssetDatabase()
+        self.asset_list = []
         self.position_list = []
-        if database_file == None:
-            self.asset_db.retrieve_database()
-        else:
+        if database_file != None:
             self.asset_db.load_database(database_file)
 
-    def buy(self, id, date, price, count, fee):
+    def load_asset_database(self, database_file):
+        self.asset_db.load_database(database_file)
+
+    def save_asset_database(self, database_file):
+        self.asset_db.save_database(database_file)
+
+    def retrieve_asset_database(self):
+        self.asset_db.retrieve_database()
+
+    def add_asset(self, id):
         if self.asset_db.is_in_database(id):
+            if id not in self.asset_list:
+                self.asset_list.append(id)
+            else:
+                print('Asset is already in portfolio')
+        else:
+            print('Asset ' + id + ' not found')
+
+    def remove_asset(self, id):
+        if id in self.asset_list:
+            self.asset_list.remove(id)
+        else:
+            print('No such asset in portfolio')
+
+    def buy(self, id, date, price, count, fee):
+        if id in self.asset_list:
             self.position_list.append(self.OpenPosition(id, np.datetime64(date), price, count, fee))
             self.position_list.sort(key = lambda x: x.date)
-            #self.position_list.sort(key = lambda x:
-            #                        datetime.strptime(x.date, self.asset_db.time_format))
         else:
             print('Asset ' + id + ' not found')
 
     def sell(self, id, date, price, count, fee):
-        if self.asset_db.is_in_database(id):
+        if id in self.asset_list:
             self.position_list.append(self.ClosedPosition(id, np.datetime64(date), price, count, fee))
             self.position_list.sort(key = lambda x: x.date)
-            #self.position_list.sort(key = lambda x:
-            #                        datetime.strptime(x.date, self.asset_db.time_format))
         else:
             print('Asset ' + id + ' not found')
 
     def pay_fee(self, date, fee):
         self.position_list.append(self.Fee(np.datetime64(date), fee))
         self.position_list.sort(key = lambda x: x.date)
-        #self.position_list.sort(key = lambda x:
-        #                        datetime.strptime(x.date, self.asset_db.time_format))
 
     def list_positions(self):
         for i, pos in zip(range(len(self.position_list)), self.position_list):
