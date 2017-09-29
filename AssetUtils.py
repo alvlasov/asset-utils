@@ -7,6 +7,9 @@ import numpy as np
 from datetime import datetime
 from bs4 import BeautifulSoup
 
+# TODO AssetDatabase отвечает только за скачивание
+# TODO historical хранит portfolio
+
 class AssetDatabase:
 
     db_columns  = ['name', 'href', 'exchange', 'ticker', 'type']
@@ -230,6 +233,7 @@ class AssetDatabase:
             num += 1
         print('%d entries loaded from %s' % (num, folder_name))
 
+
 class AssetPortfolio:
 
     # TODO update_position_historical
@@ -364,7 +368,6 @@ class AssetPortfolio:
         return price
 
     def get_portfolio_price_span(self, start_date, end_date):
-        time_format = self.asset_db.time_format
         date = np.datetime64(start_date)
         end_date = np.datetime64(end_date)
         delta = np.timedelta64(1, 'D')
@@ -381,3 +384,8 @@ class AssetPortfolio:
     def get_profit(self):
         return self.get_portfolio_price_today() + self.get_money_withdrawn() - \
                self.get_fee() - self.get_money_invested()
+
+    def get_week_statistics(self, start_date, end_date):
+        start_date = pd.to_datetime(start_date)
+        end_date = pd.to_datetime(end_date)
+        print(start_date.weekday())
