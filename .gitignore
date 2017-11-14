@@ -143,5 +143,4 @@ $RECYCLE.BIN/
 *.csv
 *.pkl
 test/
-asset_utils.py
-asset_utils.ipynb
+asset_utils.*
