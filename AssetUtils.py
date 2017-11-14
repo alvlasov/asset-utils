@@ -151,11 +151,11 @@ class AssetDatabase:
                 print('Download error')
                 return None
             wb = xlrd.open_workbook('_temp.xls', logfile = open(os.devnull, 'w'))
-            stats_df = pd.read_excel(wb, engine = 'xlrd', skiprows = 3, header = None,
-                                     names = ['date', 'price'], parse_cols = 1)
+            stats_df = pd.concat([stats_df, pd.read_excel(wb, engine = 'xlrd', skiprows = 3, header = None,
+                                            names = ['date', 'price'], parse_cols = 1)], axis = 1)
             os.remove('_temp.xls')
-        if len(stats_df) != 0:
-            stats_df['date'] = pd.to_datetime(stats_df['date'], format = self.time_format)
+        stats_df['date'] = pd.to_datetime(stats_df['date'], format = self.time_format)
+
         return stats_df
 
 class Asset:
@@ -181,11 +181,10 @@ class Asset:
             stats_df = pd.DataFrame(init_value, index = date_range, columns = ['count'])
             prices_df = self._db.retrieve_asset_historical(self.id, self.last_updated, today)
 
-
             price = []
             for s in date_range:
-                if len(prices_df) != 0:
-                    prices = prices_df[prices_df['date'] <= s]
+                prices = prices_df[prices_df['date'] <= s]
+                if len(prices) != 0:
                     price.append(prices.iloc[0]['price'])
                 else:
                     price.append(self.stats.iloc[-1]['price'])
@@ -439,3 +438,15 @@ class AssetPortfolio:
         self.position_list = data[4]
         logging.info('Portfolio loaded from %s.pkl' % name)
         return self
+
+    def get_asset_counts(self, date_ = None):
+        if date_ == None:
+            date_ = self.last_updated
+        counts = {}
+        price = self.get_price(date_)
+        for asset in self.asset_list:
+            count = asset.get_count(date_)
+            asset_price = asset.get_price(date_)
+            counts[asset.name] = ['%.2f (%.2f %%)' % (count, 100 *count*asset_price/price)]
+        counts['Date'] = [date_]
+        return pd.DataFrame.from_dict(counts)
