@@ -152,7 +152,7 @@ class AssetDatabase:
                 return None
             wb = xlrd.open_workbook('_temp.xls', logfile = open(os.devnull, 'w'))
             stats_df = pd.concat([stats_df, pd.read_excel(wb, engine = 'xlrd', skiprows = 3, header = None,
-                                            names = ['date', 'price'], parse_cols = 1)], axis = 1)
+                                            names = ['date', 'price'], parse_cols = 1)])
             os.remove('_temp.xls')
         stats_df['date'] = pd.to_datetime(stats_df['date'], format = self.time_format)
 
@@ -447,6 +447,82 @@ class AssetPortfolio:
         for asset in self.asset_list:
             count = asset.get_count(date_)
             asset_price = asset.get_price(date_)
-            counts[asset.name] = ['%.2f (%.2f %%)' % (count, 100 *count*asset_price/price)]
+            counts[asset.name] = [count]
         counts['Date'] = [date_]
         return pd.DataFrame.from_dict(counts)
+
+    def get_distribution(self, date_ = None):
+        if date_ == None:
+            date_ = self.last_updated
+        counts = {}
+        price = self.get_price(date_)
+        for asset in self.asset_list:
+            count = asset.get_count(date_)
+            asset_price = asset.get_price(date_)
+            counts[asset.name] = [count*asset_price/price]
+        counts['Date'] = [date_]
+        return pd.DataFrame.from_dict(counts)
+
+import cvxpy
+
+class Rebalancer:
+
+    def rebalance(self, portfolio, target_distr, refill = 0):
+        n_assets = len(portfolio.asset_list)
+        if len(target_distr) != n_assets:
+            raise Exception('Wrong len of target_split')
+        if sum(target_distr) != 1:
+            raise Exception('Wrong partitioning')
+
+        date = portfolio.last_updated
+        portfolio_price = portfolio.get_price(date)
+        target_price = portfolio_price + refill
+        asset_prices = []
+        assets_with_real_counts = []
+        for i, asset in enumerate(portfolio.asset_list):
+            asset_prices.append(asset.get_price(date))
+            if asset.get_count(date) % 1 != 0:
+                assets_with_real_counts.append(i)
+
+        real_multiplier = 10 ** 6
+        for i in assets_with_real_counts:
+            asset_prices[i] /= real_multiplier
+
+        A = np.diag(asset_prices/target_price)
+        y = np.array(target_distr)
+        x = cvxpy.Int(n_assets)
+        obj = cvxpy.Minimize(cvxpy.norm(A * x - y, 2))
+        prob = cvxpy.Problem(obj)
+        sol = prob.solve()
+        x_val = np.array(x.value).reshape(-1,).tolist()
+
+        for i in assets_with_real_counts:
+            x_val[i] /= real_multiplier
+
+        eps = 10 ** -6
+        output = []
+        output_cols = ['Name', 'Price', 'Count', 'Price*Count', 'Rebalanced count', 'Price*RCount', 'Price*(RCount-Count)', 'Tip', 'Distribution', 'Rebalanced distribution']
+        for i in range(n_assets):
+            asset = portfolio.asset_list[i]
+            price = asset.get_price(date)
+            count = asset.get_count(date)
+            new_count = x_val[i]
+
+            if abs(new_count - count) > eps:
+                if new_count > count:
+                    tip = 'buy '
+                else:
+                    tip = 'sell '
+                if i in assets_with_real_counts:
+                    tip += '%.5f' % abs(new_count - count)
+                else:
+                    tip += '%d' % round(abs(new_count - count))
+            else:
+                tip = ''
+
+            distr = '%.2f%%' % (100 * count * price / portfolio_price)
+            new_distr = '%.2f%%' %  (100 * new_count * price / target_price)
+            delta_count = new_count-count if abs(count-new_count) > 10**-5 else 0
+            output.append([asset.name, price, count, price*count, new_count, price*new_count, price*delta_count, tip, distr, new_distr])
+
+        return pd.DataFrame(output, columns=output_cols)
